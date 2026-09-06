@@ -3,7 +3,6 @@ from pydantic import BaseModel
 from typing import Optional
 
 from app.database import supabase
-from app.services.network_analysis.neo4j_analysis import Neo4jAnalysis
 from app.services.network_analyzer import analyze_network
 from app.services.network_model import (
     InvestigationNetwork,
@@ -11,9 +10,7 @@ from app.services.network_model import (
     NetworkRelationship,
     NetworkTransaction,
 )
-from app.services.neo4j_service import Neo4jService
 from app.services.network_analysis.graph_builder import build_graph
-from app.services.network_analysis.neo4j_sync import sync_network_to_neo4j
 
 
 router = APIRouter(
@@ -40,29 +37,58 @@ class CreateCaseRequest(BaseModel):
 @router.get("/{case_id}/network-intelligence")
 def network_intelligence(case_id: int):
 
-    analyzer = Neo4jAnalysis()
+    case_response = (
+        supabase
+        .table("cases")
+        .select("id")
+        .eq("id", case_id)
+        .execute()
+    )
 
-    try:
-        degree = analyzer.degree_centrality(case_id)
-        bridges = analyzer.bridge_entities(case_id)
-        communities = analyzer.communities(case_id)
+    if not case_response.data:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Case with ID {case_id} not found"
+        )
 
-        return {
-            "status": "success",
-            "case_id": case_id,
-            "analysis": {
-                "most_connected": degree,
-                "bridge_entities": bridges,
-                "communities": communities
-            }
-        }
+    relationships = (
+        supabase
+        .table("relationships")
+        .select("*")
+        .eq("case_id", case_id)
+        .execute()
+        .data
+    )
 
-    finally:
-        analyzer.close()
+    transactions = (
+        supabase
+        .table("transactions")
+        .select("*")
+        .eq("case_id", case_id)
+        .execute()
+        .data
+    )
+
+    analysis = analyze_network(
+        relationships,
+        transactions
+    )
+
+    return {
+        "status": "success",
+        "case_id": case_id,
+        "analysis": analysis
+    }
 
 
 # =========================================================
 # Sync Case To Neo4j
+# =========================================================
+# Production version:
+# Neo4j is local on the development machine, so Render
+# cannot access it. The live graph therefore uses Supabase.
+# This endpoint is kept so the existing frontend continues
+# to work without modification.
 # =========================================================
 
 @router.post("/{case_id}/sync-neo4j")
@@ -82,35 +108,11 @@ def sync_case_neo4j(case_id: int):
             detail=f"Case with ID {case_id} not found"
         )
 
-    result = sync_network_to_neo4j(case_id)
-
     return {
         "status": "success",
         "case_id": case_id,
-        "neo4j_sync": result
+        "message": "Network data is ready from Supabase"
     }
-
-
-# =========================================================
-# Neo4j Graph
-# =========================================================
-
-@router.get("/{case_id}/neo4j-graph")
-def get_neo4j_graph(case_id: int):
-
-    neo4j = Neo4jService()
-
-    try:
-        graph = neo4j.get_graph(case_id)
-
-        return {
-            "status": "success",
-            "case_id": case_id,
-            "graph": graph
-        }
-
-    finally:
-        neo4j.close()
 
 
 # =========================================================
@@ -247,7 +249,16 @@ def get_entity_type(entity):
     if entity.upper().startswith("TXN-"):
         return "TRANSACTION"
 
-    if entity.isdigit() and len(entity) == 10:
+    # Supports normal 10-digit Indian phone numbers
+    # as well as numbers containing +91.
+    phone_candidate = (
+        entity
+        .replace("+91", "")
+        .replace(" ", "")
+        .replace("-", "")
+    )
+
+    if phone_candidate.isdigit() and len(phone_candidate) == 10:
         return "PHONE"
 
     locations = [
@@ -676,18 +687,30 @@ def get_case_graph(case_id: int):
 
     network = InvestigationNetwork()
 
+    # ---------------------------------------------------------
+    # Persons
+    # ---------------------------------------------------------
+
     for person in persons:
+
         network.entities.append(
             NetworkEntity(
-                id=f"PERSON:{person['name']}",
-                name=person["name"],
+                id=f"PERSON:{person['name'].strip()}",
+                name=person["name"].strip(),
                 entity_type="PERSON",
                 confidence=person.get("confidence")
             )
         )
 
+    # ---------------------------------------------------------
+    # Phones
+    # ---------------------------------------------------------
+
     for phone in phones:
-        number = str(phone["number"]).strip()
+
+        number = str(
+            phone["number"]
+        ).strip()
 
         network.entities.append(
             NetworkEntity(
@@ -697,7 +720,12 @@ def get_case_graph(case_id: int):
             )
         )
 
+    # ---------------------------------------------------------
+    # Bank Accounts
+    # ---------------------------------------------------------
+
     for account in accounts:
+
         account_number = str(
             account["account_number"]
         ).strip()
@@ -710,8 +738,15 @@ def get_case_graph(case_id: int):
             )
         )
 
+    # ---------------------------------------------------------
+    # Locations
+    # ---------------------------------------------------------
+
     for location in locations:
-        name = str(location["name"]).strip()
+
+        name = str(
+            location["name"]
+        ).strip()
 
         network.entities.append(
             NetworkEntity(
@@ -721,8 +756,15 @@ def get_case_graph(case_id: int):
             )
         )
 
+    # ---------------------------------------------------------
+    # Organizations
+    # ---------------------------------------------------------
+
     for organization in organizations:
-        name = str(organization["name"]).strip()
+
+        name = str(
+            organization["name"]
+        ).strip()
 
         network.entities.append(
             NetworkEntity(
@@ -732,40 +774,60 @@ def get_case_graph(case_id: int):
             )
         )
 
+    # ---------------------------------------------------------
+    # Relationships
+    # ---------------------------------------------------------
+
     for relationship in relationships:
+
+        source = str(
+            relationship["source"]
+        ).strip()
+
+        target = str(
+            relationship["target"]
+        ).strip()
+
+        relationship_type = str(
+            relationship["relationship_type"]
+        ).strip()
 
         network.relationships.append(
             NetworkRelationship(
-                source=str(
-                    relationship["source"]
-                ).strip(),
-                target=str(
-                    relationship["target"]
-                ).strip(),
-                relationship_type=relationship[
-                    "relationship_type"
-                ],
-                confidence=relationship.get(
-                    "confidence"
-                )
+                source=source,
+                target=target,
+                relationship_type=relationship_type,
+                confidence=relationship.get("confidence")
             )
         )
 
+    # ---------------------------------------------------------
+    # Transactions
+    # ---------------------------------------------------------
+
     for transaction in transactions:
+
+        source = str(
+            transaction["from_account"]
+        ).strip()
+
+        target = str(
+            transaction["to_account"]
+        ).strip()
 
         network.transactions.append(
             NetworkTransaction(
-                source=str(
-                    transaction["from_account"]
-                ).strip(),
-                target=str(
-                    transaction["to_account"]
-                ).strip(),
+                source=source,
+                target=target,
                 amount=transaction.get("amount"),
                 date=transaction.get("date"),
                 reference=transaction.get("reference")
             )
         )
+
+    # ---------------------------------------------------------
+    # Build Graph
+    # ---------------------------------------------------------
 
     graph = build_graph(network)
 
@@ -773,4 +835,30 @@ def get_case_graph(case_id: int):
         "status": "success",
         "case_id": case_id,
         **graph
+    }
+
+
+# =========================================================
+# Production Network Graph Compatibility Endpoint
+# =========================================================
+# The existing frontend requests:
+#
+# GET /cases/{case_id}/neo4j-graph
+#
+# We return the Supabase graph here so the frontend does
+# not need to be changed.
+# =========================================================
+
+@router.get("/{case_id}/neo4j-graph")
+def get_neo4j_graph(case_id: int):
+
+    graph_response = get_case_graph(case_id)
+
+    return {
+        "status": "success",
+        "case_id": case_id,
+        "graph": {
+            "nodes": graph_response.get("nodes", []),
+            "edges": graph_response.get("edges", [])
+        }
     }
