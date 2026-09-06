@@ -20,7 +20,7 @@ import {
 import "@xyflow/react/dist/style.css"
 
 
-const API_URL = "http://127.0.0.1:8000"
+const API_URL = "https://sih26189.onrender.com"
 
 
 /* =====================================================

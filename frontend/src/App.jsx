@@ -5,7 +5,7 @@ import NetworkGraph from "./components/NetworkGraph"
 import DocumentUpload from "./components/DocumentUpload"
 import ReviewPanel from "./components/ReviewPanel"
 
-const API_URL = "http://127.0.0.1:8000"
+const API_URL = "https://sih26189.onrender.com"
 
 function App() {
   const [cases, setCases] = useState([])
