@@ -1,4 +1,5 @@
-from fastapi import APIRouter, UploadFile, File, HTTPException
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException
+from typing import Optional
 from pypdf import PdfReader
 from io import BytesIO
 from datetime import datetime
@@ -128,176 +129,106 @@ async def extract_from_pdf(
 
 @router.post("/pdf/save")
 async def extract_and_save_pdf(
-    file: UploadFile = File(...)
+    file: UploadFile = File(...),
+    case_id: Optional[int] = Form(None)
 ):
 
     if not file.filename:
-
         raise HTTPException(
             status_code=400,
             detail="No file provided"
         )
 
     if not file.filename.lower().endswith(".pdf"):
-
         raise HTTPException(
             status_code=400,
             detail="Only PDF files are supported"
         )
 
     try:
-
         # =================================================
         # READ PDF
         # =================================================
-
         file_content = await file.read()
-
-        reader = PdfReader(
-            BytesIO(file_content)
-        )
+        reader = PdfReader(BytesIO(file_content))
 
         pages = []
-
         for page in reader.pages:
-
             text = page.extract_text() or ""
-
             pages.append(text)
 
         full_text = "\n".join(pages)
 
         if not full_text.strip():
-
             raise HTTPException(
                 status_code=400,
                 detail="No readable text found in PDF"
             )
 
-
         # =================================================
         # EXTRACT INFORMATION
         # =================================================
+        case_info = extract_case_info(full_text)
+        entities = extract_entities(full_text)
+        relationships = extract_relationships(full_text)
+        transactions = extract_transactions(full_text)
 
-        case_info = extract_case_info(
-            full_text
-        )
-
-        entities = extract_entities(
-            full_text
-        )
-
-        relationships = extract_relationships(
-            full_text
-        )
-
-        transactions = extract_transactions(
-            full_text
-        )
-
-
-        # =================================================
-        # CONVERT REPORT DATE
-        # =================================================
-
+        # Convert report date
         report_date = None
-
-        if case_info["report_date"]:
-
+        if case_info.get("report_date"):
             try:
-
                 report_date = datetime.strptime(
                     case_info["report_date"],
                     "%d %B %Y"
                 ).date().isoformat()
-
             except ValueError:
-
                 report_date = None
 
-
-        # =================================================
-        # VALIDATE CASE NUMBER
-        # =================================================
-
-        if not case_info["case_number"]:
-
-            raise HTTPException(
-                status_code=400,
-                detail="Case ID could not be extracted from PDF"
-            )
-
-
-        # =================================================
-        # CHECK DUPLICATE CASE
-        # =================================================
-
-        existing_case = (
-
-            supabase
-
-            .table("cases")
-
-            .select(
-                "id, case_number"
-            )
-
-            .eq(
-                "case_number",
-                case_info["case_number"]
-            )
-
-            .execute()
-
-        )
-
-        if existing_case.data:
-
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    f"Case "
-                    f"{case_info['case_number']} "
-                    f"already exists"
+        # Resolve or create case
+        if case_id:
+            # Case explicitly specified
+            case_check = supabase.table("cases").select("*").eq("id", case_id).execute()
+            if not case_check.data:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Target case with ID {case_id} not found"
                 )
+            target_case = case_check.data[0]
+            case_number = target_case["case_number"]
+        else:
+            # Check if case number extracted
+            case_number = case_info.get("case_number")
+            if not case_number:
+                # Generate fallback case number
+                case_number = f"CASE-{datetime.now().year}-{abs(hash(file.filename)) % 9000 + 1000:04d}"
+
+            # Check if case exists
+            existing_case = (
+                supabase
+                .table("cases")
+                .select("id, case_number")
+                .eq("case_number", case_number)
+                .execute()
             )
 
-
-        # =================================================
-        # CREATE CASE
-        # =================================================
-
-        case_response = (
-
-            supabase
-
-            .table("cases")
-
-            .insert({
-
-                "case_number":
-                    case_info["case_number"],
-
-                "title":
-                    f"Investigation "
-                    f"{case_info['case_number']}",
-
-                "status":
-                    case_info["status"],
-
-                "primary_location":
-                    case_info["primary_location"],
-
-                "report_date":
-                    report_date
-
-            })
-
-            .execute()
-
-        )
-
-        case_id = case_response.data[0]["id"]
+            if existing_case.data:
+                # Attach to existing case instead of throwing 409
+                case_id = existing_case.data[0]["id"]
+            else:
+                # Create new case
+                case_response = (
+                    supabase
+                    .table("cases")
+                    .insert({
+                        "case_number": case_number,
+                        "title": f"Investigation {case_number}",
+                        "status": case_info.get("status") or "Under Investigation",
+                        "primary_location": case_info.get("primary_location"),
+                        "report_date": report_date
+                    })
+                    .execute()
+                )
+                case_id = case_response.data[0]["id"]
 
 
         # =================================================

@@ -239,6 +239,20 @@ def extract_entities(text: str):
         if person not in invalid_persons
     ]
 
+    # Fallback to spaCy NER for persons if section not matched
+    if len(persons) == 0:
+        doc = nlp(text[:8000])
+        for ent in doc.ents:
+            if ent.label_ == "PERSON":
+                clean_name = ent.text.strip()
+                if (
+                    len(clean_name.split()) >= 2
+                    and clean_name not in invalid_persons
+                    and not any(ch.isdigit() for ch in clean_name)
+                    and len(clean_name) < 40
+                ):
+                    persons.append(clean_name)
+
     persons = unique(persons)
 
     # =====================================================
@@ -248,44 +262,52 @@ def extract_entities(text: str):
     locations = []
 
     locations_section = re.search(
-        r"5\.\s*Locations"
-        r"(.*?)(?=6\.\s*Organizations)",
+        r"(?:5\.\s*)?Locations"
+        r"(.*?)(?=(?:6\.\s*)?Organizations|\Z)",
         text,
         flags=re.IGNORECASE | re.DOTALL
     )
 
-    if locations_section:
+    search_locations_text = locations_section.group(1) if locations_section else text
 
-        section = locations_section.group(1)
+    # Current known locations
+    location_patterns = [
+        r"Vijay Nagar,\s*Indore",
+        r"Palasia,\s*Indore",
+        r"Bhopal,\s*Madhya Pradesh",
+        r"Bhawarkua,\s*Indore",
+        r"Rau,\s*Indore",
+        r"Bengali Square,\s*Indore",
+        r"Scheme No\.?\s*54,\s*Indore",
+        r"MG Road,\s*Indore",
+        r"Airport Road,\s*Indore",
+        r"Ujjain,\s*Madhya Pradesh",
+        r"Dewas,\s*Madhya Pradesh",
+        r"Pithampur,\s*Madhya Pradesh",
+        r"Gurugram,\s*Haryana",
+        r"New Delhi,\s*Delhi",
+        r"Jaipur,\s*Rajasthan"
+    ]
 
-        # Current known locations
-        location_patterns = [
-            r"Vijay Nagar,\s*Indore",
-            r"Palasia,\s*Indore",
-            r"Bhopal,\s*Madhya Pradesh",
-            r"Bhawarkua,\s*Indore",
-            r"Rau,\s*Indore",
-            r"Bengali Square,\s*Indore",
-            r"Scheme No\.?\s*54,\s*Indore",
-            r"MG Road,\s*Indore",
-            r"Airport Road,\s*Indore",
-            r"Ujjain,\s*Madhya Pradesh",
-            r"Dewas,\s*Madhya Pradesh",
-            r"Pithampur,\s*Madhya Pradesh",
-            r"Gurugram,\s*Haryana",
-            r"New Delhi,\s*Delhi",
-            r"Jaipur,\s*Rajasthan"
+    for pattern in location_patterns:
+        matches = re.findall(
+            pattern,
+            search_locations_text,
+            flags=re.IGNORECASE
+        )
+        locations.extend(matches)
+
+    # Fallback to general Indian cities/states or spaCy GPE
+    if len(locations) == 0:
+        major_cities = [
+            "Mumbai", "Delhi", "Bengaluru", "Hyderabad", "Ahmedabad", "Chennai",
+            "Kolkata", "Surat", "Pune", "Jaipur", "Lucknow", "Kanpur", "Nagpur",
+            "Indore", "Thane", "Bhopal", "Visakhapatnam", "Patna", "Vadodara",
+            "Ghaziabad", "Ludhiana", "Agra", "Nashik", "Faridabad", "Meerut"
         ]
-
-        for pattern in location_patterns:
-
-            matches = re.findall(
-                pattern,
-                section,
-                flags=re.IGNORECASE
-            )
-
-            locations.extend(matches)
+        for city in major_cities:
+            if re.search(r"\b" + re.escape(city) + r"\b", text, re.IGNORECASE):
+                locations.append(city)
 
     locations = [
         location.strip()
@@ -302,11 +324,18 @@ def extract_entities(text: str):
 
     organization_patterns = re.findall(
         r"\b[A-Z][A-Za-z&.\- ]+?"
-        r"(?:Pvt\.?\s*Ltd\.?|Ltd\.?|Limited|LLP|Inc\.?)\b",
+        r"(?:Pvt\.?\s*Ltd\.?|Ltd\.?|Limited|LLP|Inc\.?|Technologies|Solutions|Enterprises|Bank|Fintech)\b",
         text
     )
 
     organizations.extend(organization_patterns)
+
+    # Fallback spaCy ORG
+    if len(organizations) == 0:
+        doc = nlp(text[:8000])
+        for ent in doc.ents:
+            if ent.label_ == "ORG" and len(ent.text.strip()) > 3:
+                organizations.append(ent.text.strip())
 
     organizations = unique(organizations)
 

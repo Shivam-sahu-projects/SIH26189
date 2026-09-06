@@ -1,6 +1,8 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List, Dict, Any
+from collections import defaultdict, Counter
+from datetime import datetime
 
 from app.database import supabase
 from app.services.network_analyzer import analyze_network
@@ -28,6 +30,146 @@ class CreateCaseRequest(BaseModel):
     title: str
     primary_location: Optional[str] = None
     status: str = "Under Investigation"
+
+
+# =========================================================
+# Cross-Case Syndicate Intelligence
+# =========================================================
+
+@router.get("/intelligence/cross-case-syndicates")
+def get_cross_case_syndicates():
+    """
+    Detect entities (phones, bank accounts, persons) that appear across
+    multiple cases, revealing organized criminal rings and money mule networks.
+    """
+    # Fetch all cases
+    cases_resp = supabase.table("cases").select("id, case_number, title, status, primary_location").execute()
+    cases_dict = {c["id"]: c for c in (cases_resp.data or [])}
+
+    # Fetch all phones
+    phones_resp = supabase.table("phone_numbers").select("number, case_id").execute()
+    phones = phones_resp.data or []
+
+    # Fetch all accounts
+    accs_resp = supabase.table("bank_accounts").select("account_number, case_id").execute()
+    accs = accs_resp.data or []
+
+    # Fetch all persons
+    persons_resp = supabase.table("persons").select("name, case_id").execute()
+    persons = persons_resp.data or []
+
+    # Fetch transactions to compute shared account flow
+    txns_resp = supabase.table("transactions").select("from_account, to_account, amount, case_id").execute()
+    txns = txns_resp.data or []
+
+    # Map entity -> set of case_ids
+    phone_to_cases = defaultdict(set)
+    for p in phones:
+        if p.get("number"):
+            phone_to_cases[str(p["number"]).strip()].add(p["case_id"])
+
+    account_to_cases = defaultdict(set)
+    for a in accs:
+        if a.get("account_number"):
+            account_to_cases[str(a["account_number"]).strip()].add(a["case_id"])
+
+    person_to_cases = defaultdict(set)
+    for p in persons:
+        if p.get("name"):
+            person_to_cases[str(p["name"]).strip()].add(p["case_id"])
+
+    # Build shared entity lists
+    shared_phones = []
+    for number, case_ids in phone_to_cases.items():
+        if len(case_ids) > 1:
+            linked_cases = [cases_dict[cid] for cid in case_ids if cid in cases_dict]
+            shared_phones.append({
+                "number": number,
+                "case_count": len(case_ids),
+                "case_ids": list(case_ids),
+                "linked_cases": linked_cases,
+                "threat_level": "CRITICAL" if len(case_ids) >= 3 else "HIGH",
+                "tag": "COMMUNICATION_HUB"
+            })
+    shared_phones.sort(key=lambda x: x["case_count"], reverse=True)
+
+    shared_accounts = []
+    for acc, case_ids in account_to_cases.items():
+        if len(case_ids) > 1:
+            linked_cases = [cases_dict[cid] for cid in case_ids if cid in cases_dict]
+            total_vol = sum(
+                float(t.get("amount") or 0)
+                for t in txns
+                if t.get("case_id") in case_ids and (t.get("from_account") == acc or t.get("to_account") == acc)
+            )
+            shared_accounts.append({
+                "account_number": acc,
+                "case_count": len(case_ids),
+                "case_ids": list(case_ids),
+                "linked_cases": linked_cases,
+                "total_flow_inr": total_vol,
+                "threat_level": "CRITICAL" if len(case_ids) >= 3 else "HIGH",
+                "tag": "MULE_ACCOUNT_RING"
+            })
+    shared_accounts.sort(key=lambda x: x["case_count"], reverse=True)
+
+    shared_persons = []
+    for name, case_ids in person_to_cases.items():
+        if len(case_ids) > 1:
+            linked_cases = [cases_dict[cid] for cid in case_ids if cid in cases_dict]
+            shared_persons.append({
+                "name": name,
+                "case_count": len(case_ids),
+                "case_ids": list(case_ids),
+                "linked_cases": linked_cases,
+                "threat_level": "CRITICAL" if len(case_ids) >= 3 else "HIGH",
+                "tag": "REPEAT_OPERATOR"
+            })
+    shared_persons.sort(key=lambda x: x["case_count"], reverse=True)
+
+    # Inter-case links
+    case_connections = defaultdict(lambda: {"shared_entities": [], "weight": 0})
+    for p in shared_phones:
+        c_list = sorted(list(p["case_ids"]))
+        for i in range(len(c_list)):
+            for j in range(i + 1, len(c_list)):
+                key = (c_list[i], c_list[j])
+                case_connections[key]["shared_entities"].append(f"Phone: {p['number']}")
+                case_connections[key]["weight"] += 1
+
+    for a in shared_accounts:
+        c_list = sorted(list(a["case_ids"]))
+        for i in range(len(c_list)):
+            for j in range(i + 1, len(c_list)):
+                key = (c_list[i], c_list[j])
+                case_connections[key]["shared_entities"].append(f"Account: {a['account_number']}")
+                case_connections[key]["weight"] += 2
+
+    syndicate_matrix = []
+    for (cid1, cid2), info in case_connections.items():
+        if cid1 in cases_dict and cid2 in cases_dict:
+            syndicate_matrix.append({
+                "case_a": cases_dict[cid1],
+                "case_b": cases_dict[cid2],
+                "shared_items": info["shared_entities"],
+                "strength": info["weight"]
+            })
+    syndicate_matrix.sort(key=lambda x: x["strength"], reverse=True)
+
+    return {
+        "status": "success",
+        "summary": {
+            "total_cases_analyzed": len(cases_dict),
+            "shared_phones_count": len(shared_phones),
+            "shared_accounts_count": len(shared_accounts),
+            "shared_persons_count": len(shared_persons),
+            "inter_case_linkages": len(syndicate_matrix)
+        },
+        "shared_phones": shared_phones,
+        "shared_accounts": shared_accounts,
+        "shared_persons": shared_persons,
+        "syndicate_matrix": syndicate_matrix
+    }
 
 
 # =========================================================
@@ -395,6 +537,128 @@ def get_case_details(case_id: int):
         "organizations": organizations,
         "relationships": relationships,
         "transactions": transactions
+    }
+
+
+# =========================================================
+# Case Cross-Case Links
+# =========================================================
+
+@router.get("/{case_id}/cross-case-links")
+def get_case_cross_case_links(case_id: int):
+    this_phones = [p["number"] for p in (supabase.table("phone_numbers").select("number").eq("case_id", case_id).execute().data or []) if p.get("number")]
+    this_accounts = [a["account_number"] for a in (supabase.table("bank_accounts").select("account_number").eq("case_id", case_id).execute().data or []) if a.get("account_number")]
+    this_persons = [p["name"] for p in (supabase.table("persons").select("name").eq("case_id", case_id).execute().data or []) if p.get("name")]
+
+    all_cases = {c["id"]: c for c in (supabase.table("cases").select("id, case_number, title, status").execute().data or []) if c["id"] != case_id}
+
+    links = []
+
+    if this_phones:
+        other_phones = supabase.table("phone_numbers").select("number, case_id").neq("case_id", case_id).in_("number", this_phones).execute().data or []
+        for op in other_phones:
+            cid = op["case_id"]
+            if cid in all_cases:
+                links.append({
+                    "entity_type": "PHONE",
+                    "value": op["number"],
+                    "linked_case": all_cases[cid],
+                    "indicator": "Shared suspect communication endpoint"
+                })
+
+    if this_accounts:
+        other_accs = supabase.table("bank_accounts").select("account_number, case_id").neq("case_id", case_id).in_("account_number", this_accounts).execute().data or []
+        for oa in other_accs:
+            cid = oa["case_id"]
+            if cid in all_cases:
+                links.append({
+                    "entity_type": "BANK_ACCOUNT",
+                    "value": oa["account_number"],
+                    "linked_case": all_cases[cid],
+                    "indicator": "Shared mule or transaction account"
+                })
+
+    if this_persons:
+        other_persons = supabase.table("persons").select("name, case_id").neq("case_id", case_id).in_("name", this_persons).execute().data or []
+        for op in other_persons:
+            cid = op["case_id"]
+            if cid in all_cases:
+                links.append({
+                    "entity_type": "PERSON",
+                    "value": op["name"],
+                    "linked_case": all_cases[cid],
+                    "indicator": "Common suspect / person of interest"
+                })
+
+    return {
+        "status": "success",
+        "case_id": case_id,
+        "total_cross_links": len(links),
+        "links": links
+    }
+
+
+# =========================================================
+# Case Investigation Dossier
+# =========================================================
+
+@router.get("/{case_id}/dossier")
+def get_case_dossier(case_id: int):
+    case_resp = supabase.table("cases").select("*").eq("id", case_id).execute()
+    if not case_resp.data:
+        raise HTTPException(status_code=404, detail="Case not found")
+    case = case_resp.data[0]
+
+    documents = supabase.table("documents").select("id, filename, document_type, created_at").eq("case_id", case_id).execute().data or []
+    persons = supabase.table("persons").select("*").eq("case_id", case_id).execute().data or []
+    phones = supabase.table("phone_numbers").select("*").eq("case_id", case_id).execute().data or []
+    accounts = supabase.table("bank_accounts").select("*").eq("case_id", case_id).execute().data or []
+    locations = supabase.table("locations").select("*").eq("case_id", case_id).execute().data or []
+    organizations = supabase.table("organizations").select("*").eq("case_id", case_id).execute().data or []
+    relationships = supabase.table("relationships").select("*").eq("case_id", case_id).execute().data or []
+    transactions = supabase.table("transactions").select("*").eq("case_id", case_id).execute().data or []
+
+    analysis = analyze_network(relationships, transactions)
+    cross_links = get_case_cross_case_links(case_id)
+
+    total_amount = sum(float(t.get("amount") or 0) for t in transactions)
+    risk = analysis.get("investigative_risk_indicator", {"score": 50, "level": "Medium"})
+
+    recommendations = []
+    if cross_links["total_cross_links"] > 0:
+        recommendations.append(f"HIGH PRIORITY: Cross-case linkage detected with {len(set(l['linked_case']['case_number'] for l in cross_links['links']))} other investigation(s). Request unified case coordination.")
+    if analysis.get("transaction_chains"):
+        recommendations.append("FINANCIAL CRIME: Multi-hop transaction layering observed. Serve Section 91 CrPC notice to beneficiary banks.")
+    if len(analysis.get("repeated_accounts", [])) > 0:
+        recommendations.append("MULE ACTIVITY: Repeated transacting accounts flagged. Initiate immediate lien / debit freeze on suspect accounts.")
+    if not recommendations:
+        recommendations.append("Continue routine surveillance and obtain call detail records (CDR) for all identified phone numbers.")
+
+    return {
+        "status": "success",
+        "case_id": case_id,
+        "dossier": {
+            "case": case,
+            "executive_summary": {
+                "risk_score": risk.get("score"),
+                "risk_level": risk.get("level"),
+                "total_documents": len(documents),
+                "total_persons": len(persons),
+                "total_phones": len(phones),
+                "total_accounts": len(accounts),
+                "total_organizations": len(organizations),
+                "total_transactions": len(transactions),
+                "total_transaction_value": total_amount,
+                "cross_case_link_count": cross_links["total_cross_links"]
+            },
+            "central_entities": analysis.get("central_entities", [])[:5],
+            "transaction_chains": analysis.get("transaction_chains", []),
+            "repeated_accounts": analysis.get("repeated_accounts", []),
+            "investigative_indicators": analysis.get("investigative_indicators", []),
+            "cross_case_links": cross_links.get("links", []),
+            "recommendations": recommendations,
+            "generated_at": datetime.now().isoformat()
+        }
     }
 
 

@@ -14,10 +14,14 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
-    "https://sih-26189.vercel.app"
-],
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "https://sih-26189.vercel.app",
+        "https://sih26189.vercel.app",
+    ],
+    allow_origin_regex=r"https://.*\.vercel\.app",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -32,7 +36,9 @@ app.include_router(cases_router)
 @app.get("/")
 def root():
     return {
-        "message": "SIH26189 API is running"
+        "message": "SIH26189 Criminal Network Analysis API is running",
+        "version": "1.0.0",
+        "status": "active"
     }
 
 
@@ -50,27 +56,6 @@ def test_database():
         "status": "success",
         "database": "connected",
         "data": response.data
-    }
-
-
-
-    return {
-        "status": "success",
-        "case": case,
-        "documents": documents,
-        "persons": persons,
-        "phone_numbers": phone_numbers,
-        "bank_accounts": bank_accounts,
-        "locations": locations,
-        "organizations": organizations,
-        "relationships": relationships,
-        "transactions": transactions
-    }
-
-    return {
-        "status": "success",
-        "count": len(response.data),
-        "cases": response.data
     }
 
 @app.get("/debug-supabase")
