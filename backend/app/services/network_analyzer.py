@@ -544,40 +544,108 @@ def analyze_network(
     else:
         level = "Low"
 
+    # --------------------------------------------------------
+    # SUSPECT / PERSON RISK & DOUBT ANALYSIS
+    # --------------------------------------------------------
+    all_entities = set(connection_count.keys())
+    for acc in transaction_accounts.keys():
+        all_entities.add(acc)
+
+    suspect_risks = []
+    for ent in all_entities:
+        ent_str = str(ent).strip()
+        deg = connection_count.get(ent, 0)
+        in_c = incoming.get(ent, 0)
+        out_c = outgoing.get(ent, 0)
+        tx_c = transaction_accounts.get(ent, 0)
+
+        # Base score components
+        ent_score = 0
+        reasons = []
+
+        # Degree connectivity (GNN node centrality)
+        if deg >= 5:
+            ent_score += 35
+            reasons.append(f"Major hub node: Directly interconnected with {deg} entities")
+        elif deg >= 3:
+            ent_score += 25
+            reasons.append(f"Key conduit: Connected to {deg} entities in criminal nexus")
+        elif deg >= 1:
+            ent_score += 15
+            reasons.append(f"Identified associate: Directly linked to {deg} entity")
+
+        # Transaction conduit weight
+        if tx_c >= 3:
+            ent_score += 30
+            reasons.append(f"High-frequency financial conduit: Engaged in {tx_c} suspicious transfers")
+        elif tx_c >= 1:
+            ent_score += 15
+            reasons.append(f"Financial transactor: Recorded in {tx_c} banking movement(s)")
+
+        # Transaction chaining
+        involved_in_chain = any(
+            ch["from"] == ent or ch["via"] == ent or ch["to"] == ent
+            for ch in unique_chains
+        )
+        if involved_in_chain:
+            ent_score += 25
+            reasons.append("Layering intermediary: Involved in multi-hop funds diversion chain")
+
+        # Repeated accounts
+        if any(ra["account"] == ent for ra in repeated_accounts):
+            ent_score += 15
+            reasons.append("Suspected mule account: Repeatedly transacted across disparate records")
+
+        ent_score = min(max(ent_score, 12), 98)
+
+        if ent_score >= 75:
+            ent_level = "Critical Suspicion"
+            status_tag = "PRIME SUSPECT"
+            action = "Recommend immediate Section 91 CrPC notice and custodial interrogation"
+        elif ent_score >= 50:
+            ent_level = "High Doubt"
+            status_tag = "KEY CONDUIT"
+            action = "Subpoena bank KYC, freeze beneficiary accounts & initiate technical surveillance"
+        elif ent_score >= 30:
+            ent_level = "Moderate Doubt"
+            status_tag = "ASSOCIATE"
+            action = "Obtain CDR / tower dumps and establish corroborating witnesses"
+        else:
+            ent_level = "Low Risk"
+            status_tag = "INCIDENTAL"
+            action = "Maintain monitoring in case dossier"
+
+        suspect_risks.append({
+            "entity": ent_str,
+            "risk_score": ent_score,
+            "doubt_level": ent_level,
+            "status_tag": status_tag,
+            "connections": deg,
+            "incoming": in_c,
+            "outgoing": out_c,
+            "transactions_count": tx_c,
+            "doubt_reasons": reasons if reasons else ["Peripheral mention in case documents"],
+            "recommended_action": action
+        })
+
+    suspect_risks.sort(key=lambda x: x["risk_score"], reverse=True)
+
     return {
-
-        "total_relationships":
-            len(relationships),
-
-        "total_transactions":
-            len(transactions),
-
-        "total_transaction_amount":
-            total_amount,
-
-        "relationship_types":
-            dict(relationship_types),
-
-        "central_entities":
-            central_entities,
-
-        "transaction_chains":
-            unique_chains,
-
-        "repeated_accounts":
-            repeated_accounts,
-
-        "investigative_indicators":
-            indicators,
-
+        "total_relationships": len(relationships),
+        "total_transactions": len(transactions),
+        "total_transaction_amount": total_amount,
+        "relationship_types": dict(relationship_types),
+        "central_entities": central_entities,
+        "transaction_chains": unique_chains,
+        "repeated_accounts": repeated_accounts,
+        "investigative_indicators": indicators,
+        "suspect_risks": suspect_risks,
         "investigative_risk_indicator": {
             "score": score,
             "level": level,
             "note": (
-                "This is an AI-assisted investigative "
-                "indicator, not a determination of guilt "
-                "or criminality. Human investigator "
-                "review is required."
+                "AI neural synthesis of network centrality, transaction velocity, "
+                "and layering indicators. Human investigator validation required."
             )
         }
     }

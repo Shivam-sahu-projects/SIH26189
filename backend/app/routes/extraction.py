@@ -251,150 +251,71 @@ async def extract_and_save_pdf(
 
 
         # =================================================
-        # SAVE PERSONS
+        # BATCH SAVE EXTRACTED DATA TO SUPABASE
         # =================================================
 
-        for person in entities["persons"]:
+        if entities.get("persons"):
+            persons_data = [
+                {"case_id": case_id, "name": person, "confidence": 0.85, "review_status": "pending"}
+                for person in entities["persons"]
+            ]
+            supabase.table("persons").insert(persons_data).execute()
 
-            supabase.table(
-                "persons"
-            ).insert({
+        if entities.get("phone_numbers"):
+            phones_data = [
+                {"case_id": case_id, "number": phone}
+                for phone in entities["phone_numbers"]
+            ]
+            supabase.table("phone_numbers").insert(phones_data).execute()
 
-                "case_id": case_id,
+        if entities.get("bank_accounts"):
+            accounts_data = [
+                {"case_id": case_id, "account_number": account}
+                for account in entities["bank_accounts"]
+            ]
+            supabase.table("bank_accounts").insert(accounts_data).execute()
 
-                "name": person,
+        if entities.get("locations"):
+            locations_data = [
+                {"case_id": case_id, "name": location}
+                for location in entities["locations"]
+            ]
+            supabase.table("locations").insert(locations_data).execute()
 
-                "confidence": 0.85,
+        if entities.get("organizations"):
+            orgs_data = [
+                {"case_id": case_id, "name": organization}
+                for organization in entities["organizations"]
+            ]
+            supabase.table("organizations").insert(orgs_data).execute()
 
-                "review_status": "pending"
+        if relationships:
+            rels_data = [
+                {
+                    "case_id": case_id,
+                    "source": rel["source"],
+                    "relationship_type": rel["type"],
+                    "target": rel["target"],
+                    "confidence": 0.80,
+                    "review_status": "pending"
+                }
+                for rel in relationships
+            ]
+            supabase.table("relationships").insert(rels_data).execute()
 
-            }).execute()
-
-
-        # =================================================
-        # SAVE PHONE NUMBERS
-        # =================================================
-
-        for phone in entities["phone_numbers"]:
-
-            supabase.table(
-                "phone_numbers"
-            ).insert({
-
-                "case_id": case_id,
-
-                "number": phone
-
-            }).execute()
-
-
-        # =================================================
-        # SAVE BANK ACCOUNTS
-        # =================================================
-
-        for account in entities["bank_accounts"]:
-
-            supabase.table(
-                "bank_accounts"
-            ).insert({
-
-                "case_id": case_id,
-
-                "account_number": account
-
-            }).execute()
-
-
-        # =================================================
-        # SAVE LOCATIONS
-        # =================================================
-
-        for location in entities["locations"]:
-
-            supabase.table(
-                "locations"
-            ).insert({
-
-                "case_id": case_id,
-
-                "name": location
-
-            }).execute()
-
-
-        # =================================================
-        # SAVE ORGANIZATIONS
-        # =================================================
-
-        for organization in entities["organizations"]:
-
-            supabase.table(
-                "organizations"
-            ).insert({
-
-                "case_id": case_id,
-
-                "name": organization
-
-            }).execute()
-
-
-        # =================================================
-        # SAVE RELATIONSHIPS
-        # =================================================
-
-        for relationship in relationships:
-
-            supabase.table(
-                "relationships"
-            ).insert({
-
-                "case_id": case_id,
-
-                "source":
-                    relationship["source"],
-
-                "relationship_type":
-                    relationship["type"],
-
-                "target":
-                    relationship["target"],
-
-                "confidence": 0.80,
-
-                "review_status": "pending"
-
-            }).execute()
-
-
-        # =================================================
-        # SAVE TRANSACTIONS
-        # =================================================
-
-        for transaction in transactions:
-
-            supabase.table(
-                "transactions"
-            ).insert({
-
-                "case_id": case_id,
-
-                "date":
-                    transaction["date"],
-
-                "from_account":
-                    transaction["from_account"],
-
-                "to_account":
-                    transaction["to_account"],
-
-                "amount":
-                    transaction["amount"],
-
-                "reference":
-                    transaction["reference"]
-
-            }).execute()
+        if transactions:
+            txns_data = [
+                {
+                    "case_id": case_id,
+                    "date": txn.get("date"),
+                    "from_account": txn["from_account"],
+                    "to_account": txn["to_account"],
+                    "amount": txn.get("amount"),
+                    "reference": txn.get("reference")
+                }
+                for txn in transactions
+            ]
+            supabase.table("transactions").insert(txns_data).execute()
 
 
         # =================================================
